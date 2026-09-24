@@ -580,10 +580,8 @@ body { display: flex; align-items: center; justify-content: center; padding: 1re
     </div>
   </div>
 
-  <!-- 背景音 -->
-  <audio id="bgWind" loop preload="auto" style="display:none">
-    <source src="sounds/wind.mp3">
-  </audio>
+  <!-- 背景音：src 由 JS 在加载时按 CDN 配置注入 -->
+  <audio id="bgWind" loop preload="auto" style="display:none"></audio>
 
   <!-- 浮窗 -->
   <div class="popup-overlay" id="popupOverlay"></div>
@@ -645,6 +643,21 @@ body { display: flex; align-items: center; justify-content: center; padding: 1re
 'use strict';
 
 /* ================================================================
+ * 0. CDN 配置
+ * ================================================================
+ * 你的 GitHub Pages：https://iriida.github.io/runzhou_new/
+ * 对应 CDN 前缀已填入下方，无需再改。
+ *
+ * 如果资源加载失败，可将 @main 换成 @master 试试（取决于仓库默认分支）。
+ * 本地调试时把 CDN_BASE 改成 '' 即可回退到相对路径。
+ * ================================================================ */
+
+const CDN_BASE = 'https://cdn.jsdelivr.net/gh/iriida/runzhou_new@main/';
+
+/** 资源路径拼接：CDN_BASE 为空时直接用相对路径 */
+const asset = p => CDN_BASE ? CDN_BASE + p : p;
+
+/* ================================================================
  * 1. 数据层
  * ================================================================ */
 
@@ -698,15 +711,15 @@ const FIGURES = {
   }
 };
 
-// 立绘 URL 集中管理，场景里只写 key
+// 立绘 URL 集中管理，场景里只写 key；asset() 负责拼 CDN 前缀
 const CHARS = {
-  xiaoman: { name: '李小满', image: 'images/xiaoman.png' },
-  zhang:   { name: '张择端', image: 'images/zhang.png' },
-  sushi:   { name: '苏轼',   image: 'images/sushi.png' }
+  xiaoman: { name: '李小满', image: asset('images/xiaoman.png') },
+  zhang:   { name: '张择端', image: asset('images/zhang.png') },
+  sushi:   { name: '苏轼',   image: asset('images/sushi.png') }
 };
 
-const TEAHOUSE = 'images/teahouse.jpg';
-const RIVER    = 'images/river.jpg';
+const TEAHOUSE = asset('images/teahouse.jpg');
+const RIVER    = asset('images/river.jpg');
 
 const SCENES = {
   s1:  { text: '北宋建中靖国元年，五月。润州城外，金山寺下，有家"江心茶馆"。', options: [{ nextScene: 's2' }], chapter: '· 第一幕 · 茶馆', bg: TEAHOUSE },
@@ -762,7 +775,7 @@ const SCENES = {
     scrollContent: '自题金山画像\n心似已灰之木，\n身如不系之舟。\n问汝平生功业，\n黄州惠州儋州。',
     nextScene: 's20',
     rightChar: 'sushi',
-    chapter: '· 第一幕 · 金山画像', bg: 'images/scroll_bg.jpg'
+    chapter: '· 第一幕 · 金山画像', bg: asset('images/scroll_bg.jpg')
   },
   s20: {
     text: '王掌柜从柜台后走出，端着一碟茶点：老先生，这是小店送您的。新做的白玉饼，尝尝。',
@@ -922,11 +935,12 @@ function stopAudio() {
 
 /**
  * 播放一句台词。找不到文件时直接调用 onEnd，不阻塞流程。
+ * 音频路径统一走 asset()，自动带上 CDN 前缀。
  */
 function playAudio(id, onEnd) {
   stopAudio();
   const ext = AUDIO_EXT[id] || '.m4a';
-  const audio = new Audio(`sounds/${id}${ext}`);
+  const audio = new Audio(asset(`sounds/${id}${ext}`));
   audio.preload = 'auto';
 
   const finish = () => {
@@ -1019,7 +1033,6 @@ function typeText(elements, paragraphs, speed, onDone) {
   let charIndex = 0;
 
   state.typeTimer = setInterval(() => {
-    // 收尾
     if (paraIndex >= paragraphs.length) {
       stopTyping();
       onDone && onDone();
@@ -1417,9 +1430,12 @@ function bindEvents() {
 }
 
 window.addEventListener('load', () => {
+  // 背景音 src 在这里注入，确保走 asset() 的 CDN 前缀
+  dom.bgWind.src = asset('sounds/wind.mp3');
+  dom.bgWind.load();
+
   dom.cover.style.display = 'flex';
   dom.cover.classList.remove('fade-out');
-  dom.bgWind.load();
   bindEvents();
 });
 </script>
