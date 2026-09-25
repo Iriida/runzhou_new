@@ -1050,9 +1050,20 @@ function playAudio(id, onEnd) {
     finish();
   };
   audio.onended = finish;
+
   audio.play().catch(err => {
     console.log('音频播放失败:', err);
-    finish();
+    const retry = () => {
+      ['click', 'touchstart', 'keydown'].forEach(evt =>
+        document.removeEventListener(evt, retry)
+      );
+      if (state.audio === audio) {
+        audio.play().catch(() => finish());
+      }
+    };
+    ['click', 'touchstart', 'keydown'].forEach(evt =>
+      document.addEventListener(evt, retry, { once: true, passive: true })
+    );
   });
 
   state.audio = audio;
@@ -1415,14 +1426,17 @@ function displayScene(sceneId) {
     ? (Array.isArray(scene.popup) ? scene.popup : [scene.popup])
     : [];
 
-  // 打字结束后：先播浮窗 / 再播台词
+  // 立即开始播放场景音频（与打字动画同步进行，减少等待时间）
+  playAudio(sceneId, () => maybeAutoContinue(scene));
+
+  // 打字动画
   typeText(elements, paragraphs, 30, () => {
+    // 打字结束后显示弹窗（如果有）
     if (popups.length) {
       showPopups(popups.slice(), () => {
+        // 弹窗结束后重新播放场景音频
         playAudio(sceneId, () => maybeAutoContinue(scene));
       });
-    } else {
-      playAudio(sceneId, () => maybeAutoContinue(scene));
     }
   });
 
