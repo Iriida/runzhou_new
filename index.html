@@ -720,6 +720,7 @@ const CHARS = {
 
 const TEAHOUSE = asset('images/teahouse.jpg');
 const RIVER    = asset('images/river.jpg');
+const SCROLL_BG = asset('images/scroll_bg.jpg');
 
 const SCENES = {
   s1:  { text: '北宋建中靖国元年，五月。润州城外，金山寺下，有家"江心茶馆"。', options: [{ nextScene: 's2' }], chapter: '· 第一幕 · 茶馆', bg: TEAHOUSE },
@@ -775,7 +776,7 @@ const SCENES = {
     scrollContent: '自题金山画像\n心似已灰之木，\n身如不系之舟。\n问汝平生功业，\n黄州惠州儋州。',
     nextScene: 's20',
     rightChar: 'sushi',
-    chapter: '· 第一幕 · 金山画像', bg: asset('images/scroll_bg.jpg')
+    chapter: '· 第一幕 · 金山画像', bg: SCROLL_BG
   },
   s20: {
     text: '王掌柜从柜台后走出，端着一碟茶点：老先生，这是小店送您的。新做的白玉饼，尝尝。',
@@ -910,21 +911,121 @@ const dom = {
 
 const state = {
   sceneId: 's1',
-  typing: false,          // 打字机是否在运行
-  typedHtml: '',          // 当前场景的完整 HTML（用于跳过打字）
+  typing: false,
+  typedHtml: '',
   autoPlay: false,
   bgmOn: false,
   audioReady: false,
   typeTimer: null,
   scrollTimer: null,
-  audio: null             // 当前正在播放的音效
+  audio: null
 };
 
 /* ================================================================
- * 4. 音频
+ * 4. 资源预加载
+ * ================================================================
+ * 策略：
+ *   - 优先：切换到新场景时，立刻预加载「下一个场景」的背景图、立绘、音频
+ *   - 后台：游戏开始后延迟 2 秒，按顺序静默加载剩余所有资源
+ *   - 用 requestIdleCallback 在浏览器空闲时加载，不阻塞主线程
+ *   - 保留资源引用防止被 GC，避免缓存失效
  * ================================================================ */
 
-const AUDIO_EXT = { wind: '.mp3' };
+const AUDIO_EXT_MAP = { wind: '.mp3' };
+
+const preloader = {
+  loaded: new Set(),
+  running: false,
+  keepAlive: [],   // 保留引用，防止资源对象被垃圾回收
+
+  /** 加载单个资源（图片或音频），返回 Promise 便于排队 */
+  load(url) {
+    if (this.loaded.has(url)) return Promise.resolve();
+    this.loaded.add(url);
+
+    const isAudio = /\.(mp3|m4a|ogg|wav)$/i.test(url);
+
+    return new Promise(resolve => {
+      if (isAudio) {
+        const audio = new Audio();
+        audio.preload = 'auto';
+        audio.oncanplaythrough = () => resolve();
+        audio.onerror = () => resolve();
+        audio.src = url;
+        this.keepAlive.push(audio);
+      } else {
+        const img = new Image();
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+        img.src = url;
+        this.keepAlive.push(img);
+      }
+    });
+  },
+
+  /** 立即加载指定场景相关的所有资源（图片 + 音频 + 立绘） */
+  loadScene(sceneId) {
+    const scene = SCENES[sceneId];
+    if (!scene) return;
+
+    if (scene.bg) this.load(scene.bg);
+
+    const ext = AUDIO_EXT_MAP[sceneId] || '.m4a';
+    this.load(asset(`sounds/${sceneId}${ext}`));
+
+    if (scene.leftChar  && CHARS[scene.leftChar])  this.load(CHARS[scene.leftChar].image);
+    if (scene.rightChar && CHARS[scene.rightChar]) this.load(CHARS[scene.rightChar].image);
+  },
+
+  /** 收集所有资源 URL */
+  collectAll() {
+    const urls = new Set();
+
+    // 立绘
+    Object.values(CHARS).forEach(c => urls.add(c.image));
+
+    // 背景
+    Object.values(SCENES).forEach(s => { if (s.bg) urls.add(s.bg); });
+
+    // 音频：每个场景一句 + 背景音 + 卷轴
+    Object.keys(SCENES).forEach(id => {
+      const ext = AUDIO_EXT_MAP[id] || '.m4a';
+      urls.add(asset(`sounds/${id}${ext}`));
+    });
+    urls.add(asset('sounds/wind.mp3'));
+    urls.add(asset('sounds/jinshan.m4a'));
+
+    return [...urls];
+  },
+
+  /** 后台顺序加载全部资源 */
+  startBackground() {
+    if (this.running) return;
+    this.running = true;
+
+    const all = this.collectAll();
+    let i = 0;
+
+    const next = () => {
+      if (i >= all.length) return;
+      const url = all[i++];
+      this.load(url).then(() => {
+        // 空闲时继续下一个，避免卡顿
+        if ('requestIdleCallback' in window) {
+          requestIdleCallback(next, { timeout: 1500 });
+        } else {
+          setTimeout(next, 200);
+        }
+      });
+    };
+
+    next();
+  }
+};
+
+/* ================================================================
+ * 5. 音频播放
+ * ================================================================ */
 
 function stopAudio() {
   if (!state.audio) return;
@@ -933,13 +1034,9 @@ function stopAudio() {
   state.audio = null;
 }
 
-/**
- * 播放一句台词。找不到文件时直接调用 onEnd，不阻塞流程。
- * 音频路径统一走 asset()，自动带上 CDN 前缀。
- */
 function playAudio(id, onEnd) {
   stopAudio();
-  const ext = AUDIO_EXT[id] || '.m4a';
+  const ext = AUDIO_EXT_MAP[id] || '.m4a';
   const audio = new Audio(asset(`sounds/${id}${ext}`));
   audio.preload = 'auto';
 
@@ -962,7 +1059,7 @@ function playAudio(id, onEnd) {
 }
 
 /* ================================================================
- * 5. 界面工具
+ * 6. 界面工具
  * ================================================================ */
 
 function hideInteractions() {
@@ -970,7 +1067,6 @@ function hideInteractions() {
   dom.continueBtn.classList.add('hidden');
 }
 
-/** 根据场景类型决定显示选项区还是继续按钮 */
 function restoreInteractions(scene) {
   if (scene.options && scene.options.length === 1) {
     dom.options.style.display = 'none';
@@ -981,7 +1077,6 @@ function restoreInteractions(scene) {
   }
 }
 
-/** 让立绘底部对齐到对话框顶部 */
 function alignCharacters() {
   const dialogRect = dom.bottomDialog.getBoundingClientRect();
   const containerRect = dom.container.getBoundingClientRect();
@@ -1005,7 +1100,6 @@ function updateCharacters(leftKey, rightKey) {
   setSide('right', rightKey);
 }
 
-/** 把文本拆成段落 → { html, paragraphs } */
 function splitText(text) {
   const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim() !== '');
   const html = paragraphs
@@ -1015,7 +1109,7 @@ function splitText(text) {
 }
 
 /* ================================================================
- * 6. 打字机
+ * 7. 打字机
  * ================================================================ */
 
 function stopTyping() {
@@ -1051,7 +1145,6 @@ function typeText(elements, paragraphs, speed, onDone) {
   }, speed);
 }
 
-/** 立即补完当前打字 */
 function finishTyping() {
   if (!state.typing) return;
   stopTyping();
@@ -1059,13 +1152,9 @@ function finishTyping() {
 }
 
 /* ================================================================
- * 7. 浮窗
+ * 8. 浮窗
  * ================================================================ */
 
-/**
- * 依次展示浮窗，全部关闭后执行 done 回调。
- * 每次只处理数组头部，关闭后递归处理剩下的。
- */
 function showPopups(items, done) {
   if (!items.length) { done && done(); return; }
 
@@ -1110,7 +1199,6 @@ function showPopups(items, done) {
     showPopups(items, done);
   };
 
-  // 用赋值方式绑定，避免多次 addEventListener 累积
   card.querySelector('.close-icon').onclick = e => {
     e.stopPropagation();
     close();
@@ -1119,12 +1207,11 @@ function showPopups(items, done) {
     if (e.target === dom.popupOverlay) close();
   };
 
-  // 音频播完自动关闭
   playAudio(item.id, close);
 }
 
 /* ================================================================
- * 8. 卷轴
+ * 9. 卷轴
  * ================================================================ */
 
 function showScroll(scene) {
@@ -1160,7 +1247,7 @@ function showScroll(scene) {
 }
 
 /* ================================================================
- * 9. 尾声
+ * 10. 尾声
  * ================================================================ */
 
 function showEnding(scene) {
@@ -1180,10 +1267,9 @@ function showEnding(scene) {
 }
 
 /* ================================================================
- * 10. 场景渲染
+ * 11. 场景渲染
  * ================================================================ */
 
-/** 自动播放：台词读完且只有一个"继续"时，自动推进 */
 function maybeAutoContinue(scene) {
   if (!state.autoPlay) return;
   if (!scene.options || scene.options.length !== 1) return;
@@ -1192,15 +1278,12 @@ function maybeAutoContinue(scene) {
   }, 500);
 }
 
-/** 渲染选项按钮组 */
 function renderOptions(scene) {
   dom.options.innerHTML = '';
   dom.continueBtn.classList.add('hidden');
 
-  // 卷轴：不在此处理
   if (scene.type === 'scroll') return;
 
-  // 选择题：所有选项共用同一个 nextScene
   if (scene.type === 'choice') {
     dom.options.style.display = 'flex';
     scene.options.forEach(opt => {
@@ -1213,7 +1296,6 @@ function renderOptions(scene) {
     return;
   }
 
-  // 文本输入
   if (scene.type === 'input') {
     dom.options.style.display = 'flex';
     const wrap = document.createElement('div');
@@ -1243,7 +1325,6 @@ function renderOptions(scene) {
     return;
   }
 
-  // 普通场景
   if (scene.options && scene.options.length === 1) {
     dom.options.style.display = 'none';
     dom.continueBtn.classList.remove('hidden');
@@ -1265,7 +1346,7 @@ function renderOptions(scene) {
   }
 }
 
-/** 主入口：切换到某个场景 */
+/** 主入口 */
 function displayScene(sceneId) {
   const scene = SCENES[sceneId];
   if (!scene) return;
@@ -1282,7 +1363,7 @@ function displayScene(sceneId) {
     return;
   }
 
-  // 从特殊界面返回普通界面
+  // 从特殊界面返回
   if (dom.endingScreen.classList.contains('active')) {
     dom.endingScreen.classList.remove('active');
     dom.topSection.style.display = 'block';
@@ -1295,7 +1376,7 @@ function displayScene(sceneId) {
     dom.scrollOverlay.classList.remove('active');
   }
 
-  // 清理浮窗
+  // 清浮窗
   dom.popupOverlay.classList.remove('active');
   dom.popupOverlay.innerHTML = '';
 
@@ -1313,7 +1394,7 @@ function displayScene(sceneId) {
   updateCharacters(scene.leftChar, scene.rightChar);
   setTimeout(alignCharacters, 50);
 
-  // 卷轴场景：不走打字机
+  // 卷轴场景
   if (scene.type === 'scroll') {
     dom.story.innerHTML = '';
     showScroll(scene);
@@ -1345,13 +1426,27 @@ function displayScene(sceneId) {
     }
   });
 
-  // 选项区（浮窗打开时会立即被 hideInteractions 覆盖）
+  // 选项区
   renderOptions(scene);
   if (popups.length) hideInteractions();
+
+  /* ---------- 关键：预加载后续资源 ---------- */
+
+  // 1. 优先预加载「下一个场景」的资源（玩家很快就要看到它）
+  const nextId = scene.options && scene.options[0] && scene.options[0].nextScene;
+  if (nextId) preloader.loadScene(nextId);
+
+  // 2. 顺便把当前场景的浮窗涉及到的立绘也预加载（如果还没加载）
+  popups.forEach(item => {
+    if (item.type === 'figure') {
+      const figKey = item.id;
+      // 人物卡片没有独立图片资源，跳过
+    }
+  });
 }
 
 /* ================================================================
- * 11. 重置 / 初始化
+ * 12. 重置 / 事件绑定 / 初始化
  * ================================================================ */
 
 function resetGame() {
@@ -1407,6 +1502,9 @@ function bindEvents() {
     setTimeout(() => {
       dom.cover.style.display = 'none';
       displayScene('s1');
+
+      // 游戏开始后延迟 2 秒启动后台全量预加载
+      setTimeout(() => preloader.startBackground(), 2000);
     }, 800);
   });
 
